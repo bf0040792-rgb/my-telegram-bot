@@ -9,18 +9,15 @@ from threading import Thread
 # FAKE WEB SERVER
 # ---------------------------
 app = Flask(__name__)
-
 @app.route('/')
-def home():
-    return "Bot is Running! 🤖"
+def home(): return "Bot is Running! 🤖"
 
 def run_web_server():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
 def keep_alive():
-    t = Thread(target=run_web_server)
-    t.start()
+    Thread(target=run_web_server).start()
 
 # ---------------------------
 # BOT CONFIGURATION
@@ -28,52 +25,57 @@ def keep_alive():
 TOKEN = "8434467890:AAEN2tmdRU3lbDLoLjFHlqUlB1Yh_baFdTM"
 BASE_URL = f"https://api.telegram.org/bot{TOKEN}/"
 ADMIN_ID = 8190715241 
-GROUP_USERNAME = "@A1Android" # Aapke group ka username
+GROUP_ID = "@A1Android" # Aapka Group Username
 
-# Database file
-DATA_FILE = "database.json"
+DATA_FILE = "keywords.json"
 
-def load_data():
+def load_keywords():
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
+        with open(DATA_FILE, "r") as f: return json.load(f)
     return {}
 
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+def save_keywords(data):
+    with open(DATA_FILE, "w") as f: json.dump(data, f)
 
-keywords = load_data()
+keywords = load_keywords()
 
 # ---------------------------
-# TELEGRAM FUNCTIONS
+# FUNCTIONS
 # ---------------------------
-def send_message(chat_id, text):
+def send_message(chat_id, text, reply_markup=None):
     payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    if reply_markup: payload["reply_markup"] = json.dumps(reply_markup)
     requests.post(BASE_URL + "sendMessage", data=payload)
 
 def delete_message(chat_id, message_id):
-    payload = {"chat_id": chat_id, "message_id": message_id}
-    requests.post(BASE_URL + "deleteMessage", data=payload)
+    requests.post(BASE_URL + "deleteMessage", data={"chat_id": chat_id, "message_id": message_id})
+
+def send_welcome(chat_id):
+    welcome_text = "Welcome! Main aapke Group ko manage karunga.\n\nAdmin keywords add karne ke liye niche button use karein."
+    buttons = {
+        "keyboard": [
+            [{"text": "My YouTube Channel"}, {"text": "Join Telegram Channel"}],
+            [{"text": "Add Keyword (Admin)"}, {"text": "Help"}]
+        ],
+        "resize_keyboard": True
+    }
+    send_message(chat_id, welcome_text, buttons)
 
 # ---------------------------
-# MAIN BOT LOGIC
+# MAIN BOT LOOP
 # ---------------------------
 def run_bot():
     global keywords
     offset = 0
-    print("Bot is Active...")
+    print("Bot starting...")
     
     while True:
         try:
-            response = requests.get(BASE_URL + f"getUpdates?offset={offset}&timeout=10")
-            data = response.json()
-
-            if "result" in data:
-                for update in data["result"]:
+            response = requests.get(BASE_URL + f"getUpdates?offset={offset}&timeout=10").json()
+            if "result" in response:
+                for update in response["result"]:
                     offset = update["update_id"] + 1
-                    if "message" not in update:
-                        continue
+                    if "message" not in update: continue
 
                     msg = update["message"]
                     chat_id = msg["chat"]["id"]
@@ -81,36 +83,48 @@ def run_bot():
                     text = msg.get("text", "")
                     user_id = msg.get("from", {}).get("id")
 
-                    # 1. Admin Command: /add key|link (Private mein ya Group mein)
-                    if text.startswith("/add") and user_id == ADMIN_ID:
-                        content = text.replace("/add", "").strip()
-                        if "|" in content:
-                            key, link = content.split("|", 1)
-                            keywords[key.strip().lower()] = link.strip()
-                            save_data(keywords)
-                            send_message(chat_id, f"✅ Keyword Saved: {key.strip()}")
-                        continue
+                    # --- PRIVATE CHAT LOGIC ---
+                    if msg["chat"]["type"] == "private":
+                        if text == "/start":
+                            send_welcome(chat_id)
+                        
+                        elif text == "Add Keyword (Admin)" and user_id == ADMIN_ID:
+                            send_message(chat_id, "📝 Naya link add karne ke liye niche diye format mein message bhejein:\n\n`/add keyword|link` \n\nExample: `/add GitHub|https://github.com`")
+                        
+                        elif text.startswith("/add") and user_id == ADMIN_ID:
+                            try:
+                                content = text.split(" ", 1)[1]
+                                key, val = content.split("|", 1)
+                                keywords[key.strip().lower()] = val.strip()
+                                save_keywords(keywords)
+                                send_message(chat_id, f"✅ Done! Ab jab koi group mein `{key.strip()}` likhega, main link bhej dunga.")
+                                # Group mein notify karein
+                                send_message(GROUP_ID, f"📢 Naya resource add kiya gaya hai: *{key.strip()}*")
+                            except:
+                                send_message(chat_id, "❌ Galat format! Use: `/add keyword|link`")
 
-                    # 2. Group Control Logic
-                    # Hum check karenge ki message group se aaya hai
-                    if msg["chat"]["type"] in ["group", "supergroup"]:
-                        # Agar Admin message kar raha hai to ignore karein (taki admin chat kar sake)
-                        if user_id == ADMIN_ID:
-                            continue
+                        elif text == "Help":
+                            send_message(chat_id, "Aap sirf wahi words likh sakte hain jo admin ne set kiye hain. Baki saare messages delete ho jayenge.")
+
+                    # --- GROUP CHAT LOGIC ---
+                    elif msg["chat"]["type"] in ["group", "supergroup"]:
+                        if user_id == ADMIN_ID: continue # Admin ke messages delete nahi honge
                         
-                        word = text.lower().strip()
-                        
-                        # Agar word database mein hai to link bhejo
-                        if word in keywords:
-                            reply = f"📦 **Available Link for {word.upper()}:**\n\n🔗 {keywords[word]}"
+                        clean_text = text.lower().strip()
+                        if clean_text in keywords:
+                            reply = f"🤖 **Link found for {clean_text}:**\n\n{keywords[clean_text]}"
                             send_message(chat_id, reply)
                         else:
-                            # AGAR WORD NAHI HAI TO MESSAGE DELETE KARO
+                            # Agar keyword match nahi hua, to message delete kar do
                             delete_message(chat_id, msg_id)
-                            print(f"Deleted unauthorized message: {text}")
 
         except Exception as e:
             print(f"Error: {e}")
+            time.sleep(2)
+
+if __name__ == "__main__":
+    keep_alive()
+    run_bot()            print(f"Error: {e}")
             time.sleep(2)
 
 if __name__ == "__main__":
